@@ -2,7 +2,6 @@ import json
 import logging
 import mimetypes
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -23,11 +22,10 @@ SOURCE_TG_CHAT_ID = int(os.environ["SOURCE_TG_CHAT_ID"])
 TARGET_MAX_CHAT = os.environ.get("TARGET_MAX_CHAT") or os.environ["TARGET_MAX_CHAT_ID"]
 
 POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "30"))
+MEDIA_GROUP_WAIT_SEC = float(os.getenv("MEDIA_GROUP_WAIT_SEC", "1.5"))
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-# Какие типы обновлений слушаем
-# Для первого стабильного варианта: только новые посты канала
 TG_ALLOWED_UPDATES = ["channel_post"]
 
 TG_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -54,11 +52,12 @@ def load_state() -> dict[str, Any]:
         try:
             return json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except Exception:
-            log.warning("Не удалось прочитать state.json, начну с пустого состояния")
+            log.warning("Failed to read state.json, starting with empty state")
     return {"tg_offset": None}
 
 
 def save_state(state: dict[str, Any]) -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(
         json.dumps(state, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -159,7 +158,7 @@ def max_iter_chats() -> list[dict[str, Any]]:
 def normalize_max_target(value: str) -> str:
     raw = value.strip()
     if not raw:
-        raise RuntimeError("TARGET_MAX_CHAT пустой")
+        raise RuntimeError("TARGET_MAX_CHAT is empty")
 
     if raw.lstrip("-").isdigit():
         return raw
@@ -171,7 +170,7 @@ def normalize_max_target(value: str) -> str:
         parsed = urlparse(raw)
         path = parsed.path.strip("/")
         if not path:
-            raise RuntimeError(f"Некорректная ссылка MAX: {raw}")
+            raise RuntimeError(f"Invalid MAX link: {raw}")
         return path.lower()
 
     return raw.strip("/").lower()
@@ -199,8 +198,8 @@ def max_resolve_recipient(target: str) -> dict[str, int]:
             return {"chat_id": int(chat["chat_id"])}
 
     raise RuntimeError(
-        "Не удалось определить chat_id для TARGET_MAX_CHAT. "
-        "Укажи числовой chat_id или сначала открой диалог/добавь бота в нужный чат."
+        "Could not resolve TARGET_MAX_CHAT into chat_id. "
+        "Open the dialog first or configure a numeric chat_id."
     )
 
 
@@ -209,15 +208,12 @@ def get_target_max_recipient() -> dict[str, int]:
 
     if _target_max_recipient is None:
         _target_max_recipient = max_resolve_recipient(TARGET_MAX_CHAT)
-        log.info("MAX получатель определён: %s", _target_max_recipient)
+        log.info("Resolved MAX recipient: %s", _target_max_recipient)
 
     return _target_max_recipient
 
 
 def max_get_upload_slot(kind: str) -> dict[str, Any]:
-    """
-    kind: image | file | video | audio
-    """
     resp = mx.post(
         f"{MAX_API}/uploads",
         params={"type": kind},
@@ -238,13 +234,6 @@ def max_upload_file(
     blob: bytes,
     mime_type: str | None,
 ) -> dict[str, Any]:
-    """
-    Возвращает attachment вида:
-    {
-      "type": "image" | "file" | "video" | "audio",
-      "payload": {...}
-    }
-    """
     slot = max_get_upload_slot(kind)
     upload_url = slot["url"]
 
@@ -252,8 +241,6 @@ def max_upload_file(
         "data": (filename, blob, mime_type or "application/octet-stream")
     }
 
-    # По документации upload можно делать multipart/form-data
-    # На всякий случай пробуем сначала с Authorization.
     resp = requests.post(
         upload_url,
         headers={"Authorization": MAX_BOT_TOKEN},
@@ -261,7 +248,6 @@ def max_upload_file(
         timeout=300,
     )
 
-    # Если CDN/endpoint не принимает Authorization, пробуем без него
     if resp.status_code in (400, 401, 403):
         resp = requests.post(
             upload_url,
@@ -270,19 +256,13 @@ def max_upload_file(
         )
 
     resp.raise_for_status()
-
-    # Для image/file token обычно приходит после загрузки.
-    # Для video/audio токен может прийти либо из /uploads, либо из ответа загрузки.
     upload_result = resp.json()
-
-    payload = None
 
     if "token" in upload_result:
         payload = upload_result
     elif "token" in slot:
         payload = {"token": slot["token"]}
     else:
-        # Иногда API может вернуть уже готовый payload-объект
         payload = upload_result
 
     return {
@@ -305,9 +285,8 @@ def max_send_message(
         body["attachments"] = attachments
 
     if not body:
-        body["text"] = "[Пустой пост]"
+        body["text"] = "[Empty post]"
 
-    # У Max после загрузки медиа может быть короткая задержка готовности вложения
     for attempt in range(6):
         resp = mx.post(
             f"{MAX_API}/messages",
@@ -325,11 +304,9 @@ def max_send_message(
         except Exception:
             err_json = {"raw": err_text}
 
-        err_code = err_json.get("code")
-
-        if err_code == "attachment.not.ready":
+        if err_json.get("code") == "attachment.not.ready":
             sleep_s = 1.5 * (attempt + 1)
-            log.warning("Вложение MAX ещё не готово, повтор через %.1fс", sleep_s)
+            log.warning("MAX attachment is not ready yet, retrying in %.1fs", sleep_s)
             time.sleep(sleep_s)
             continue
 
@@ -350,15 +327,13 @@ def get_post_text(post: dict[str, Any]) -> str:
 def extract_attachments_from_post(post: dict[str, Any]) -> list[dict[str, Any]]:
     attachments: list[dict[str, Any]] = []
 
-    # Фото
     if post.get("photo"):
-        photo = post["photo"][-1]  # самое большое фото
+        photo = post["photo"][-1]
         blob, filename, mime_type = tg_download_file(photo["file_id"])
         attachments.append(
             max_upload_file("image", filename or "photo.jpg", blob, mime_type)
         )
 
-    # Документ
     if post.get("document"):
         doc = post["document"]
         blob, filename, mime_type = tg_download_file(doc["file_id"])
@@ -371,7 +346,6 @@ def extract_attachments_from_post(post: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
 
-    # Видео
     if post.get("video"):
         video = post["video"]
         blob, filename, mime_type = tg_download_file(video["file_id"])
@@ -384,7 +358,6 @@ def extract_attachments_from_post(post: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
 
-    # Аудио
     if post.get("audio"):
         audio = post["audio"]
         blob, filename, mime_type = tg_download_file(audio["file_id"])
@@ -397,7 +370,6 @@ def extract_attachments_from_post(post: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
 
-    # Голосовое
     if post.get("voice"):
         voice = post["voice"]
         blob, filename, mime_type = tg_download_file(voice["file_id"])
@@ -410,7 +382,6 @@ def extract_attachments_from_post(post: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
 
-    # Анимация/GIF как video
     if post.get("animation"):
         animation = post["animation"]
         blob, filename, mime_type = tg_download_file(animation["file_id"])
@@ -426,29 +397,65 @@ def extract_attachments_from_post(post: dict[str, Any]) -> list[dict[str, Any]]:
     return attachments
 
 
-def handle_channel_post(post: dict[str, Any]) -> None:
-    chat = post["chat"]
-    chat_id = int(chat["id"])
+def extract_attachments_from_posts(posts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+
+    for post in posts:
+        attachments.extend(extract_attachments_from_post(post))
+
+    return attachments
+
+
+def get_posts_text(posts: list[dict[str, Any]]) -> str:
+    for post in posts:
+        text = get_post_text(post)
+        if text:
+            return text
+    return ""
+
+
+def handle_channel_posts(posts: list[dict[str, Any]]) -> None:
+    first_post = posts[0]
+    chat_id = int(first_post["chat"]["id"])
 
     if chat_id != SOURCE_TG_CHAT_ID:
         return
 
-    text = get_post_text(post)
-    attachments = extract_attachments_from_post(post)
+    text = get_posts_text(posts)
+    attachments = extract_attachments_from_posts(posts)
 
     if not text and not attachments:
-        text = "[Пост без поддерживаемого контента]"
+        text = "[Post without supported content]"
 
     result = max_send_message(text=text, attachments=attachments)
-
     max_message = result.get("message", {})
     log.info(
-        "Репост выполнен: tg_chat=%s tg_msg=%s -> max_chat=%s max_mid=%s",
+        "Repost complete: tg_chat=%s tg_msg=%s media_group=%s items=%s -> max_chat=%s max_mid=%s",
         chat_id,
-        post.get("message_id"),
+        first_post.get("message_id"),
+        first_post.get("media_group_id"),
+        len(posts),
         get_target_max_recipient().get("chat_id"),
         max_message.get("mid"),
     )
+
+
+def flush_ready_media_groups(
+    pending_media_groups: dict[str, dict[str, Any]],
+    *,
+    force: bool = False,
+) -> None:
+    now = time.monotonic()
+    ready_group_ids: list[str] = []
+
+    for media_group_id, group in pending_media_groups.items():
+        if force or now - group["updated_at"] >= MEDIA_GROUP_WAIT_SEC:
+            ready_group_ids.append(media_group_id)
+
+    for media_group_id in ready_group_ids:
+        group = pending_media_groups.pop(media_group_id)
+        posts = sorted(group["posts"], key=lambda item: item.get("message_id", 0))
+        handle_channel_posts(posts)
 
 
 # =========================
@@ -456,30 +463,49 @@ def handle_channel_post(post: dict[str, Any]) -> None:
 # =========================
 def main() -> None:
     state = load_state()
+    pending_media_groups: dict[str, dict[str, Any]] = {}
     tg_delete_webhook()
-    log.info("Мост Telegram -> MAX запущен")
+    log.info("Telegram -> MAX bridge started")
 
     while True:
         try:
+            flush_ready_media_groups(pending_media_groups)
             updates = tg_get_updates(state.get("tg_offset"))
 
             for update in updates:
                 state["tg_offset"] = update["update_id"] + 1
 
                 if "channel_post" in update:
-                    handle_channel_post(update["channel_post"])
+                    post = update["channel_post"]
+                    media_group_id = post.get("media_group_id")
+
+                    if media_group_id:
+                        group = pending_media_groups.setdefault(
+                            media_group_id,
+                            {"posts": [], "updated_at": time.monotonic()},
+                        )
+                        group["posts"].append(post)
+                        group["updated_at"] = time.monotonic()
+                    else:
+                        handle_channel_posts([post])
 
                 save_state(state)
 
+            if pending_media_groups:
+                time.sleep(MEDIA_GROUP_WAIT_SEC)
+                flush_ready_media_groups(pending_media_groups)
+
         except requests.RequestException as exc:
-            log.exception("Сетевая ошибка: %s", exc)
+            log.exception("Network error: %s", exc)
             time.sleep(5)
         except KeyboardInterrupt:
-            log.info("Остановка по Ctrl+C")
+            log.info("Stopped by Ctrl+C")
             break
         except Exception as exc:
-            log.exception("Необработанная ошибка: %s", exc)
+            log.exception("Unhandled error: %s", exc)
             time.sleep(5)
+
+    flush_ready_media_groups(pending_media_groups, force=True)
 
 
 if __name__ == "__main__":
