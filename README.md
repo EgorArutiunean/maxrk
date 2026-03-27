@@ -31,6 +31,8 @@ Use a unique `INSTANCE_NAME` and `STATE_FILE` for each bridge instance so logs a
 docker compose up -d --build
 ```
 
+Local `docker compose` will automatically read variables from `.env`.
+
 ## Run locally
 
 ```bash
@@ -50,3 +52,18 @@ python -m venv venv
 ## Deployment
 
 See `VM_SETUP.md`.
+
+## Deploy to Coolify
+
+Use a Docker Compose deployment for this project. It is a background worker with persistent state and no public HTTP port.
+
+In Coolify:
+
+1. Create a new resource from the `maxrk` GitHub repository.
+2. Select the `Docker Compose` deployment type.
+3. Use `compose.yaml` from the repository.
+4. Do not configure a domain or exposed port for this service.
+5. Set these environment variables in Coolify:
+   `TELEGRAM_BOT_TOKEN`, `MAX_BOT_TOKEN`, `SOURCE_TG_CHAT`, `TARGET_MAX_CHAT`, `INSTANCE_NAME`, `STATE_FILE`.
+6. Leave `STATE_FILE` as `/app/data/maxrk-state.json` unless you have a reason to change it.
+7. Deploy and verify logs contain `[maxrk] Telegram -> MAX bridge started`.
