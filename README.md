@@ -17,10 +17,13 @@ Create `.env` from `.env.example` and set:
 - `MAX_BOT_TOKEN`
 - `SOURCE_TG_CHAT`
 - `TARGET_MAX_CHAT`
+- `INSTANCE_NAME`
 
 `SOURCE_TG_CHAT` can be a numeric chat id, `@username`, or Telegram link.
 
 `TARGET_MAX_CHAT` can be a numeric chat id, `@username`, or MAX link.
+
+Use a unique `INSTANCE_NAME` and `STATE_FILE` for each bridge instance so logs and Telegram offsets do not overlap.
 
 ## Run with Docker
 

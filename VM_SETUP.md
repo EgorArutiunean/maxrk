@@ -26,6 +26,13 @@ Copy these files into `/opt/maxrk`:
 - `requirements.txt`
 - `maxrk-bridge.service`
 
+Recommended `.env` values for this instance:
+
+```env
+INSTANCE_NAME=maxrk
+STATE_FILE=/opt/maxrk/state.json
+```
+
 ## 3. Create virtualenv and install deps
 
 ```bash
@@ -44,7 +51,7 @@ cd /opt/maxrk
 Expected startup log:
 
 ```text
-Telegram -> MAX bridge started
+[maxrk] Telegram -> MAX bridge started
 ```
 
 Stop with `Ctrl+C`.
@@ -74,4 +81,5 @@ sudo journalctl -u maxrk-bridge -f
 - Telegram bot must be admin in the source channel.
 - MAX bot must have access to the target chat/dialog.
 - `TARGET_MAX_CHAT` in `.env` can be a link, username, or numeric `chat_id`.
+- Use a unique `STATE_FILE` for each deployed bridge instance.
 - VM must allow outbound HTTPS to `api.telegram.org` and `platform-api.max.ru`.

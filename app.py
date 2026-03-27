@@ -22,6 +22,7 @@ MAX_BOT_TOKEN = os.environ["MAX_BOT_TOKEN"]
 SOURCE_TG_CHAT = os.environ.get("SOURCE_TG_CHAT") or os.environ["SOURCE_TG_CHAT_ID"]
 TARGET_MAX_CHAT = os.environ.get("TARGET_MAX_CHAT") or os.environ["TARGET_MAX_CHAT_ID"]
 
+INSTANCE_NAME = os.getenv("INSTANCE_NAME", "tg-to-max")
 POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "30"))
 MEDIA_GROUP_WAIT_SEC = float(os.getenv("MEDIA_GROUP_WAIT_SEC", "1.5"))
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
@@ -107,7 +108,7 @@ def tg_print_webhook_info() -> None:
     if not data.get("ok"):
         raise RuntimeError(f"Telegram getWebhookInfo failed: {data}")
 
-    log.info("Telegram webhook info: %s", data["result"])
+    log.info("[%s] Telegram webhook info: %s", INSTANCE_NAME, data["result"])
 
 
 def tg_delete_webhook() -> None:
@@ -277,7 +278,7 @@ def get_target_max_recipient() -> dict[str, int]:
 
     if _target_max_recipient is None:
         _target_max_recipient = max_resolve_recipient(TARGET_MAX_CHAT)
-        log.info("Resolved MAX recipient: %s", _target_max_recipient)
+        log.info("[%s] Resolved MAX recipient: %s", INSTANCE_NAME, _target_max_recipient)
 
     return _target_max_recipient
 
@@ -384,7 +385,11 @@ def max_send_message(
 
         if err_json.get("code") == "attachment.not.ready":
             sleep_s = 1.5 * (attempt + 1)
-            log.warning("MAX attachment is not ready yet, retrying in %.1fs", sleep_s)
+            log.warning(
+                "[%s] MAX attachment is not ready yet, retrying in %.1fs",
+                INSTANCE_NAME,
+                sleep_s,
+            )
             time.sleep(sleep_s)
             continue
 
@@ -508,7 +513,8 @@ def handle_channel_posts(posts: list[dict[str, Any]]) -> None:
     result = max_send_message(text=text, attachments=attachments)
     max_message = result.get("message", {})
     log.info(
-        "Repost complete: tg_chat=%s tg_msg=%s media_group=%s items=%s -> max_chat=%s max_mid=%s",
+        "[%s] Repost complete: tg_chat=%s tg_msg=%s media_group=%s items=%s -> max_chat=%s max_mid=%s",
+        INSTANCE_NAME,
         chat_id,
         first_post.get("message_id"),
         first_post.get("media_group_id"),
@@ -546,11 +552,13 @@ def main() -> None:
     tg_delete_webhook()
     tg_print_webhook_info()
     log.info(
-        "Bridge instance started | hostname=%s | pid=%s",
+        "[%s] Bridge instance started | hostname=%s | pid=%s | state_file=%s",
+        INSTANCE_NAME,
         socket.gethostname(),
         os.getpid(),
+        STATE_FILE,
     )
-    log.info("Telegram -> MAX bridge started")
+    log.info("[%s] Telegram -> MAX bridge started", INSTANCE_NAME)
 
     while True:
         try:
@@ -581,13 +589,13 @@ def main() -> None:
                 flush_ready_media_groups(pending_media_groups)
 
         except requests.RequestException as exc:
-            log.exception("Network error: %s", exc)
+            log.exception("[%s] Network error: %s", INSTANCE_NAME, exc)
             time.sleep(5)
         except KeyboardInterrupt:
-            log.info("Stopped by Ctrl+C")
+            log.info("[%s] Stopped by Ctrl+C", INSTANCE_NAME)
             break
         except Exception as exc:
-            log.exception("Unhandled error: %s", exc)
+            log.exception("[%s] Unhandled error: %s", INSTANCE_NAME, exc)
             time.sleep(5)
 
     flush_ready_media_groups(pending_media_groups, force=True)
