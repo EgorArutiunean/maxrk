@@ -14,21 +14,22 @@ sudo apt install -y python3 python3-pip python3-venv
 Create target directory:
 
 ```bash
-sudo mkdir -p /opt/tg-max-bridge
-sudo chown $USER:$USER /opt/tg-max-bridge
+sudo mkdir -p /opt/maxrk
+sudo chown $USER:$USER /opt/maxrk
 ```
 
-Copy these files into `/opt/tg-max-bridge`:
+Copy these files into `/opt/maxrk`:
 
 - `app.py`
 - `.env`
+- `.env.example`
 - `requirements.txt`
-- `tg-max-bridge.service`
+- `maxrk-bridge.service`
 
 ## 3. Create virtualenv and install deps
 
 ```bash
-cd /opt/tg-max-bridge
+cd /opt/maxrk
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ```
@@ -36,36 +37,36 @@ python3 -m venv venv
 ## 4. Quick manual run
 
 ```bash
-cd /opt/tg-max-bridge
+cd /opt/maxrk
 ./venv/bin/python app.py
 ```
 
 Expected startup log:
 
 ```text
-Мост Telegram -> MAX запущен
+Telegram -> MAX bridge started
 ```
 
 Stop with `Ctrl+C`.
 
 ## 5. Configure systemd
 
-Replace `YOUR_LINUX_USER` in `tg-max-bridge.service` with your actual VM user.
+Replace `YOUR_LINUX_USER` in `maxrk-bridge.service` with your actual VM user.
 
 Install service:
 
 ```bash
-sudo cp /opt/tg-max-bridge/tg-max-bridge.service /etc/systemd/system/tg-max-bridge.service
+sudo cp /opt/maxrk/maxrk-bridge.service /etc/systemd/system/maxrk-bridge.service
 sudo systemctl daemon-reload
-sudo systemctl enable tg-max-bridge
-sudo systemctl start tg-max-bridge
+sudo systemctl enable maxrk-bridge
+sudo systemctl start maxrk-bridge
 ```
 
 ## 6. Check logs
 
 ```bash
-sudo systemctl status tg-max-bridge
-sudo journalctl -u tg-max-bridge -f
+sudo systemctl status maxrk-bridge
+sudo journalctl -u maxrk-bridge -f
 ```
 
 ## 7. Common checks

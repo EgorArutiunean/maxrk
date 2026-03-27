@@ -2,6 +2,7 @@ import json
 import logging
 import mimetypes
 import os
+import socket
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 MAX_BOT_TOKEN = os.environ["MAX_BOT_TOKEN"]
 
-SOURCE_TG_CHAT_ID = int(os.environ["SOURCE_TG_CHAT_ID"])
+SOURCE_TG_CHAT = os.environ.get("SOURCE_TG_CHAT") or os.environ["SOURCE_TG_CHAT_ID"]
 TARGET_MAX_CHAT = os.environ.get("TARGET_MAX_CHAT") or os.environ["TARGET_MAX_CHAT_ID"]
 
 POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "30"))
@@ -80,13 +81,33 @@ def tg_get_updates(offset: int | None) -> list[dict[str, Any]]:
         params=params,
         timeout=POLL_TIMEOUT + 10,
     )
-    resp.raise_for_status()
+
+    if not resp.ok:
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = {"raw": resp.text}
+        raise RuntimeError(
+            f"Telegram getUpdates failed: status={resp.status_code}, body={payload}"
+        )
+
     data = resp.json()
 
     if not data.get("ok"):
         raise RuntimeError(f"Telegram getUpdates failed: {data}")
 
     return data["result"]
+
+
+def tg_print_webhook_info() -> None:
+    resp = tg.get(f"{TG_API}/getWebhookInfo", timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram getWebhookInfo failed: {data}")
+
+    log.info("Telegram webhook info: %s", data["result"])
 
 
 def tg_delete_webhook() -> None:
@@ -127,6 +148,38 @@ def tg_download_file(file_id: str) -> tuple[bytes, str, str | None]:
     resp.raise_for_status()
 
     return resp.content, filename, mime_type
+
+
+def normalize_tg_chat_target(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise RuntimeError("SOURCE_TG_CHAT is empty")
+
+    if raw.lstrip("-").isdigit():
+        return raw
+
+    if raw.startswith("@"):
+        return raw[1:].lower()
+
+    if raw.startswith("http://") or raw.startswith("https://"):
+        parsed = urlparse(raw)
+        path = parsed.path.strip("/")
+        if not path:
+            raise RuntimeError(f"Invalid Telegram link: {raw}")
+        return path.lower()
+
+    return raw.strip("/").lower()
+
+
+def tg_post_matches_source(post: dict[str, Any]) -> bool:
+    chat = post["chat"]
+    source_target = normalize_tg_chat_target(SOURCE_TG_CHAT)
+
+    if source_target.lstrip("-").isdigit():
+        return int(chat["id"]) == int(source_target)
+
+    username = (chat.get("username") or "").strip().lower()
+    return username == source_target
 
 
 # =========================
@@ -182,7 +235,9 @@ def max_resolve_recipient(target: str) -> dict[str, int]:
     if normalized_target.lstrip("-").isdigit():
         return {"chat_id": int(normalized_target)}
 
-    for chat in max_iter_chats():
+    chats = max_iter_chats()
+
+    for chat in chats:
         link = (chat.get("link") or "").strip()
         title = (chat.get("title") or "").strip().lower()
         dialog_user = chat.get("dialog_with_user") or {}
@@ -196,6 +251,20 @@ def max_resolve_recipient(target: str) -> dict[str, int]:
 
         if normalized_target in candidates:
             return {"chat_id": int(chat["chat_id"])}
+
+    log.warning(
+        "MAX target was not resolved. target=%s available_chats=%s",
+        normalized_target,
+        [
+            {
+                "chat_id": chat.get("chat_id"),
+                "title": chat.get("title"),
+                "link": chat.get("link"),
+                "username": (chat.get("dialog_with_user") or {}).get("username"),
+            }
+            for chat in chats[:20]
+        ],
+    )
 
     raise RuntimeError(
         "Could not resolve TARGET_MAX_CHAT into chat_id. "
@@ -256,12 +325,21 @@ def max_upload_file(
         )
 
     resp.raise_for_status()
-    upload_result = resp.json()
+
+    try:
+        upload_result = resp.json()
+    except ValueError:
+        upload_result = {}
 
     if "token" in upload_result:
         payload = upload_result
     elif "token" in slot:
         payload = {"token": slot["token"]}
+    elif not upload_result:
+        raise RuntimeError(
+            f"MAX upload succeeded with empty response but no token was provided: "
+            f"type={kind}, status={resp.status_code}"
+        )
     else:
         payload = upload_result
 
@@ -418,7 +496,7 @@ def handle_channel_posts(posts: list[dict[str, Any]]) -> None:
     first_post = posts[0]
     chat_id = int(first_post["chat"]["id"])
 
-    if chat_id != SOURCE_TG_CHAT_ID:
+    if not tg_post_matches_source(first_post):
         return
 
     text = get_posts_text(posts)
@@ -464,7 +542,14 @@ def flush_ready_media_groups(
 def main() -> None:
     state = load_state()
     pending_media_groups: dict[str, dict[str, Any]] = {}
+    tg_print_webhook_info()
     tg_delete_webhook()
+    tg_print_webhook_info()
+    log.info(
+        "Bridge instance started | hostname=%s | pid=%s",
+        socket.gethostname(),
+        os.getpid(),
+    )
     log.info("Telegram -> MAX bridge started")
 
     while True:

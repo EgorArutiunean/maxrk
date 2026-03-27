@@ -1,5 +1,5 @@
 services:
-  tg-max-bridge:
+  maxrk-bridge:
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,7 +7,7 @@ services:
     env_file:
       - .env
     volumes:
-      - bridge_state:/app/data
+      - maxrk_bridge_state:/app/data
 
 volumes:
-  bridge_state:
+  maxrk_bridge_state:

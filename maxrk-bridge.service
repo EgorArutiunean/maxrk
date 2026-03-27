@@ -1,13 +1,13 @@
 [Unit]
-Description=Telegram to MAX bridge
+Description=maxrk Telegram to MAX bridge
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/tg-max-bridge
-EnvironmentFile=/opt/tg-max-bridge/.env
-ExecStart=/opt/tg-max-bridge/venv/bin/python /opt/tg-max-bridge/app.py
+WorkingDirectory=/opt/maxrk
+EnvironmentFile=/opt/maxrk/.env
+ExecStart=/opt/maxrk/venv/bin/python /opt/maxrk/app.py
 Restart=always
 RestartSec=5
 
